@@ -1,0 +1,453 @@
+---
+title: "Democrats or Republicans: Who has a more difficult time voting?"
+subtitle: "Datasci 203: Lab 1"
+author: "Annie Friar, Kushal Gourikrishna" 
+output:
+  bookdown::pdf_document2: 
+    toc: true
+    number_sections: true
+---
+
+```{=tex}
+\newpage
+\setcounter{page}{1}
+```
+```{r load packages and set options, include=FALSE}
+library(tidyverse) 
+library(magrittr)
+library(knitr)
+library(patchwork)
+library(moments)
+
+theme_set(theme_bw())
+
+options(tinytex.verbose = TRUE)
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+```
+
+```{r load and clean data, include = FALSE}
+#load data from csv file
+anes <- read.csv('anes_timeseries_2020_csv_20220210.csv')
+
+#add columns to data frame
+anes <- anes %>% 
+  mutate(
+
+     #party lists what party voter is based on V201231x or V201230 answer
+      party = case_when(
+      (V201231x == 1 | V201230 == 3)  ~ 'D', 
+      (V201231x == 2 | V201230 == 3) ~ 'D', 
+      (V201231x == 3 | V201230 == 3) ~ 'D',
+      (V201231x == 4 | V201230 == 2) ~ 'I', 
+      (V201231x == 5 | V201230 == 1)~ 'R', 
+      (V201231x == 6 | V201230 == 1)  ~ 'R',
+      (V201231x == 7 | V201230 == 1)  ~ 'R',
+    TRUE ~ 'NA'),
+    
+    #party_lean distinguishes between the different questions that determine party
+    party_lean = case_when(
+      (V201228 == 1) ~ 'Identifies as Democrat',
+      (V201228 == 2) ~ 'Identifies as Republican',
+      (V201230 == 3) ~ 'Leans Democrat', 
+      (V201230 == 1) ~ 'Leans Republican', 
+      (V202064 == 1) ~ 'Registered D (no identification or lean)',
+      (V202064 == 2) ~ 'Registered R (no identification or lean)',
+      TRUE ~ 'NA'),
+    
+    #identifies if the respondent had any kind of difficulty voting
+    had_difficulty = case_when(
+      (V202120a == 0 & V202120b == 0 & V202120c == 0 & V202120d == 0 
+       & V202120e == 0 & V202120f == 0 & V202120g == 0 & 
+         V202120h == 0 & V202120i == 0 & V202120j == 0 & 
+         V202120k == 1) ~ 'No',
+      (V202120a == 1 | V202120b == 1 | V202120c == 1 | V202120d == 1 
+       |V202120e == 1 |V202120f == 1 | V202120g == 1 | 
+        V202120h == 1 | V202120i == 1 | V202120j == 1) ~ 'Yes',
+      TRUE ~ 'NA'),
+    
+    #translates had_difficulty Yes / No to numeric values
+    had_difficulty_numeric = case_when(
+      (had_difficulty == 'Yes' ~ 1),
+      (had_difficulty == 'No' ~ 0),
+      (had_difficulty == 'NA' ~ -1)),
+    
+    #translates party to numeric values for ranking in charts
+    party_numeric = case_when(
+      party == 'D' ~ 1,
+      party == 'R' ~ 2,
+      party == 'I' ~ 3,
+      party == 'NA' ~ 4),
+    
+    #did the respondent vote in 2020 & detail
+    vote_status = case_when(
+      V202068x == 1 ~ "Registered - Did Not Vote",
+      V202068x == 0 ~ "Not Registered - Did Not Vote",
+      V202068x == 2 ~ "Voted",
+      TRUE ~ "Other"
+    ),
+    
+    #1 equals voted, 0 equals did not vote
+    voted = case_when(
+      V202068x == 2 ~ 1,
+      TRUE ~ 0
+    ),
+    
+    #verifying that those who had difficulty all did end up voting (by survey definition)
+    had_difficulty_and_voted = case_when(
+      voted == 1 & had_difficulty_numeric == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    
+    #identifies if the respondent had any kind of difficulty registering (apathy and ineligibility not counted)
+    difficulty_registering = case_when(
+       V202114a == 1 | # did not meet deadlines
+       V202114b == 1 | # did not know how
+       V202114d == 1 | # form not processed correctly
+       V202114e == 1 | # did not have correct ID
+       V202114h == 1 | # permanent illness or disability
+       V202114i == 1  # difficulty with English
+       # did not count: c. did not meet residency requirements, f. not interested in election, g. vote would not make a difference, j. not eligible to vote, k. other
+       ~ 1,
+      TRUE ~ 0
+    ),
+    
+    #identifies if the respondent did not vote due to difficulty (apathy not counted)
+    did_not_vote_due_to_difficulty = case_when(
+       V202123 == 3 | # too busy
+       V202123 == 5 | # not registered
+       V202123 == 6 | # ID issue
+       V202123 == 8 | # disabled or sick
+       V202123 == 9 | # transportation
+       V202123 == 10 | # bad weather
+       V202123 == 11 | # long line
+       V202123 == 12 | # turned away
+       V202123 == 13 | # didn't receive requested absentee ballot
+       V202123 == 14 | # didn't know how
+       V202123 == 15 # not enough info about candidates
+       # did not count: 1. I forgot, 2. not interested, 4. did not like candidates, 7. out of town, 16. other
+       ~ 1,
+       TRUE ~ 0
+    ),
+    
+    #any difficulty experienced (registering, voting & did vote, voting & did not vote)
+    any_difficulty = case_when(
+      had_difficulty_numeric == 1 |
+      difficulty_registering == 1 |
+      did_not_vote_due_to_difficulty == 1
+      ~ 1,
+      TRUE ~ 0
+    ),
+    
+    difficulty_type = case_when(
+      V202120a == 1 ~ 'Registration Problem',
+      V202120b == 1 ~ 'Concern about ID',
+      V202120c == 1 ~ 'Absentee Ballot Problem',
+      V202120d == 1 ~ 'Confusion about Ballot or Machine',
+      V202120e == 1 ~ 'Difficulty Getting to Polling Place',
+      V202120f == 1 ~ 'Long Wait Times',
+      V202120g == 1 ~ 'Work Schedule',
+      V202120h == 1 ~ 'Bad Weather',
+      V202120i == 1 ~ 'Issue Mailing Ballot',
+      V202120j == 1 ~ 'Other',
+      V202120k == 1 ~ 'No Problem'
+    ),
+
+    #count n
+    count_rows = 1
+    )
+```
+
+# Importance and Context
+
+The 2020 presidential election was a highly contested and highly anticipated election. Per a national survey conducted by the Pew Research Center, a record 83% of voters answered that the 2020 presidential election "really matters". On the other hand, 2020 was also right in the midst of the COVID-19 pandemic and voters were concerned about how difficult it would be to vote in the 2020 election.. Per the same Pew Research Center survey, about half of registered voters expected to have some difficulties voting. When looking at the breakdown between political parties, 60% of registered Democrats answered that they expected to have difficulties voting while only 35% of Republicans answered the same thing \footnote{Pew Research Center. Election 2020: Voters Are Highly Engaged, but Nearly Half Expect To Have Difficulties Voting" (2020)}. While COVID-19 is a huge factor, other methods of voting have also gained a lot more traction such as vote-by-mail and same-day voting. Access and ease of voting is an important factor for both political parties and campaigns and understanding how difficult it is for voters to vote is crucial to improving or leveraging the current situation.
+
+This analysis specifically looks at voting difficulty through a partisan lens. As mentioned in the previous paragraph, about half of overall registered voters reported that they expected to experience difficulty voting but there was a stark difference in percentage between the two parties (Republican and Democrat). Now that the 2020 election has passed, this analysis aims to look at that partisan divide regarding voting difficulty. Specifically, the goal of this analysis is to address the following research question:
+
+```{=tex}
+\begin{quote}
+  \textit{Did Democratic voters or Republican voters experience more difficulty voting in the 2020 election?}
+\end{quote}
+```
+
+Gathering insights into the partisan divide (if there is any) in voting difficulty can assist future campaigns from both parties better understand their voter base and champion efforts to improve the circumstances around ease of voting.
+
+# Data and Methodology
+
+This analysis relies on data from the American National Election Studies (ANES). The data we use is from the ANES 2020 Time Series study. The study is a two-wave panel design that involves pre-election and post-election interviews. Over 8,000 individuals were interviewed in some capacity. The sampling frame for the fresh sample was the list of residential addresses where the United States Postal Service delivers mail. ANES researchers report that "most of the population of interest for the study was 'covered.'"\footnote{American National Election Studies. 2021. ANES 2020 Time Series Study Full Release [dataset and documentation]. February 10, 2022 version. [www.electionstudies.org](http://www.electionstudies.org/)}. However, the sample is not perfectly nationally representative. Furthermore, the response rate for the fresh sample was over 36%, and the re-interview rate was 90%. This means that there may be response bias present that further impacts the representativeness of the sample.
+
+To operationalize the question of how difficulty in the voting process was experienced by the two major parties, first we needed to distinguish party membership for survey respondents. One option we considered was simply relying on a voter's self-identification. However, as discussed by John Richard Petrocik, most independents in national surveys are actually "leaners", and treating them as independents underestimates party-level effects.\footnote{Petrocik, J. R. (2009). Measuring party support: Leaners are not independents. *Electoral Studies*.}. Therefore, we relied on both party identification as well as the question, "Do you think of yourself as closer to the Republican Party or to the Democratic Party?". As shown in Table 1, using this methodology resulted in an additional 1,854 partisans being classified as either a Democrat or a Republican. We remove respondents who are true Independents as well as individuals who had no post-election interview or refused to answer questions about party leanings, leaving 7,277 partisans for whom difficulty voting could be compared.
+
+```{r set up party breakdown table, include = FALSE}
+anes_table_filter <- anes %>%
+  filter(party %in% c("D", "R"))
+
+summary_table <-
+  anes_party_table <- anes_table_filter %>% 
+  mutate(
+    Party_Classification = case_when(
+      party == 'D' ~ 'Democrat',
+      party == 'R' ~ 'Republican'
+    ),
+    Party_Lean = party_lean,
+    Respondents = count_rows,
+    Had_Difficulty_Numeric_no_negative = case_when(
+      had_difficulty_numeric == -1 ~ 0,
+      had_difficulty_numeric == 0 ~ 0,
+      had_difficulty_numeric == 1 ~ 1
+    )
+  ) %>%
+  group_by(Party_Classification, Party_Lean) %>% 
+  summarize(
+    Respondents = sum(count_rows),
+    .groups = "keep"
+  ) %>% as.data.frame()
+```
+
+```{r, echo=FALSE}
+# show party breakdown table
+kable(
+  summary_table,
+  digits = 2,
+  caption = "Party Indentification Breakdown", 
+  booktabs = TRUE, 
+)
+```
+
+Difficulties can arise in many different phases of the voting process, and vary state to state. In many states, voters are required to register in advance of the election. Once registered, voters can experience challenges with reaching polling places or receiving ballots, with finding time to vote, and with long wait times, among other difficulties. Some studies have managed to quantify such challenges objectively, for example in exploring how the consolidation of polling places depresses voter turnout using a natural experiment.\footnote{McNulty, J. E., Dowling, C. M., and Ariotti, M. H. (2009). Driving Saints to Sin: How Increasing the Difficulty of Voting Dissuades Even the Most Motivated Voters. Political Analysis, 17(4), 435–455}. However, voters' personal experience of these difficulties is also relevant. Recent research has found that experiencing long waits at the polls decreases turnout for future elections\footnote{Petrocik, J. R. (2009). Measuring party support: Leaners are not independents. Electoral Studies}. Since voting is a personal decision, voters' personal experience of the voting process can impact their current and future decisions to vote. Therefore, in this analysis, we decided to focus on voters' self-reported experiences of challenges voting.
+
+The ANES study asks several questions that allow respondents to share difficulties that arise for them during the election cycle. Respondents can share difficulties that prevented them from registering to vote, difficulties that they experience while voting, and, in some cases, difficulties that kept them from casting their vote. Respondents also share details about the difficulties they experience, citing things like work schedule, difficulty getting to polling place, and long wait times, as shown in Figure 1.
+
+```{r difficulty compare, include = FALSE}
+
+anes_filter <- anes %>%
+  filter(had_difficulty_numeric != -1 & party %in% c("D", "R"))
+
+anes_subset <- anes_filter %>% 
+  group_by(party) %>% 
+  summarize(
+    party_count = sum(count_rows),
+    voted_count = sum(voted),
+    party_difficulty = sum(had_difficulty_numeric),
+    pct_difficulty = round((party_difficulty / party_count) * 100, digits=2),
+    had_difficulty_and_voted_count = sum(had_difficulty_and_voted),
+    reg_difficulty = sum(difficulty_registering),
+    did_not_vote_difficulty = sum(did_not_vote_due_to_difficulty)
+  )
+
+```
+
+```{r fig.cap='Voting Difficulties Reported', fig.height = 4, echo=FALSE}
+anes_subset_1 <- anes_filter %>% 
+  group_by(difficulty_type) %>%
+  summarize(
+    diff_count = sum(count_rows)
+    #party_difficulty_registration = sum(V202120a),
+    #party_difficulty_ID = sum(V202120b),
+    #party_difficulty_absentee = sum(V202120c),
+    #party_difficulty_confused_ballot = sum(V202120d),
+    #party_difficulty_polling_place = sum(V202120e),
+    #party_difficulty_wait_times = sum(V202120f),
+    #party_difficulty_work_schedule = sum(V202120g),
+    #party_difficulty_weather = sum(V202120h),
+    #party_difficulty_mail = sum(V202120i),
+    #party_difficulty_other = sum(V202120j),
+    #pct_difficulty_registration = round((party_difficulty_registration / party_count), digits=3),
+    #pct_difficulty_ID = round((party_difficulty_ID / party_count), digits=3),
+    #pct_difficulty_absentee = round((party_difficulty_absentee / party_count), digits=3),
+    #pct_difficulty_confused = round((party_difficulty_confused_ballot / party_count), digits=3),
+    #pct_difficulty_polling_place = round((party_difficulty_polling_place / party_count), digits=3),
+    #pct_difficulty_wait_times = round((party_difficulty_wait_times / party_count), digits=3),
+    #pct_difficulty_work_schedule = round((party_difficulty_work_schedule / party_count), digits=3),
+    #pct_difficulty_weather = round((party_difficulty_weather  / party_count), digits=3),
+    #pct_difficulty_mail = round((party_difficulty_mail / party_count), digits=3),
+    #pct_difficulty_other = round((party_difficulty_other / party_count), digits=3)
+  )
+
+difficulty_color <- c("Absentee Ballot Problem" = 'dodgerblue4', "Bad Weather" = 'green4',"Concern about ID" = 'orange3', "Confusion about Ballot or Machine" = 'yellow', "Difficulty Getting to Polling Place" = 'magenta3', "Issues Mailing Ballot" = 'seagreen2', "Long Wait Times" = 'brown', "Other" = 'red', "Registration Problem" = 'black', "Work Schedule" = 'grey')
+
+anes_subset_1 %>% 
+  filter(!(difficulty_type %in% c('No Problem'))) %>% 
+  ggplot() + 
+  aes (x = reorder(difficulty_type, diff_count), y = diff_count, 
+       color = difficulty_type, fill=difficulty_type) + 
+  geom_col() + 
+  ggtitle("Breakdown of Reported Types of Voting Difficulties") + 
+  theme(plot.title=element_text(face="bold")) + 
+  xlab("Type of Voting Difficulty") + ylab("# Reported Difficulty Voting") +
+  theme_minimal() +
+  theme(
+  panel.grid.major.x = element_blank()
+  )+
+  theme(axis.text.x = element_blank()) +
+  coord_flip()
+```
+
+These are subjective evaluations of difficulty, and different people may have different thresholds for acknowledging these difficulties experienced during their interview. In this analysis, we treat any difficulty reported, whether during registration, voting, or a difficulty that deterred the respondent from voting altogether, as relevant. The breakdown of difficulties in different phases of the voting experienced by party is shown in Table 2.
+
+```{r set up table, include = FALSE}
+anes_table_filter <- anes %>%
+  filter(party %in% c("D", "R"))
+
+difficulty_summary_table <-
+  anes_party_table <- anes_table_filter %>% 
+  mutate(
+    Party_Classification = case_when(
+      party == 'D' ~ 'Democrat',
+      party == 'R' ~ 'Republican'
+    ),
+    Respondents = count_rows,
+    Had_Difficulty_Numeric_no_negative = case_when(
+      had_difficulty_numeric == -1 ~ 0,
+      had_difficulty_numeric == 0 ~ 0,
+      had_difficulty_numeric == 1 ~ 1
+    )
+  ) %>%
+  group_by(Party_Classification) %>% 
+  summarize(
+    Any = sum(any_difficulty),
+    Registering = sum(difficulty_registering),
+    Voting = sum(Had_Difficulty_Numeric_no_negative),
+    Deterred_Voting = sum(did_not_vote_due_to_difficulty),
+    .groups = "keep"
+  ) %>% as.data.frame()
+```
+
+```{r, echo=FALSE}
+# show difficulty breakdown table
+kable(
+  difficulty_summary_table,
+  digits = 2,
+  caption = "Difficulty Voting Breakdown", 
+  booktabs = TRUE, 
+)
+```
+
+For each group we do find that a sizable portion of voters from the two parties report experiencing difficulties in the voting process, as shown in the chart below. However, to know if this difference is significant, we must turn to a statistical test.
+
+```{r fig.cap='Party Affiliation & Percentage Experiencing Difficulty Voting', fig.height = 4, echo=FALSE}
+
+# show chart
+anes_chart_filter <- anes %>%
+  filter(had_difficulty_numeric != -1 & party %in% c("D", "R")) %>%
+  mutate(
+    party_label = case_when(
+      party == 'D' ~ 'Democratic',
+      party == 'R' ~ 'Republican')
+      )
+
+anes_chart_subset <- anes_chart_filter %>% 
+  group_by(party_label) %>% 
+  summarize(
+    party_count = sum(count_rows),
+    party_difficulty = sum(had_difficulty_numeric),
+    pct_difficulty_chart = round((party_difficulty / party_count), digits=3)
+  )
+
+anes_chart_subset %>% 
+  ggplot() + 
+  aes (x = party_label, y = pct_difficulty_chart, 
+       color = party_label, fill=party_label) + 
+  geom_col() + 
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_manual(name="Party", values = 
+                       c("Democratic" = "deepskyblue3", "Republican" = "coral2")) +
+  scale_fill_manual(name="Party", values = 
+                      c("Democratic" = "deepskyblue3", "Republican" = "coral2")) +
+  geom_text(aes(label = scales::percent(pct_difficulty_chart)), 
+            vjust = 1.5, colour = "white") +
+  ggtitle("Party Affiliation & Percentage Experiencing Difficulty Voting") + 
+  theme(plot.title=element_text(face="bold")) + 
+  xlab("Party Affiliation") + ylab("% Experiencing Difficulty Voting") +
+  theme_minimal() +
+  theme(
+  panel.grid.major.x = element_blank()
+  )
+```
+
+Because we are comparing two groups (Democrats and Republicans) and our outcome variable is binary (a voter experienced difficulty or not) we can run a two-sample t-test.
+
+The null hypothesis of our t-test can be phrased as follows:
+
+```{=tex}
+\begin{quote}
+  \textbf{Null Hypothesis:} \textit{The probability that a Democrat experiences difficulty voting is equal to the probability that a Republican experiences difficulty voting}
+\end{quote}
+```
+For a t-test to be usable, the following assumptions must be true:
+
+-   The data being evaluated must be drawn from a independent and identically distributed sample.
+-   The data being evaluated must be measured on a metric scale
+-   The overall sample size must be sufficiently large enough such that Central Limit Theorem applies (the distrubution converges to a normal distribution.)
+
+The first assumption states that the data must be generated by an I.I.D process.The 2020 ANES data was drawn from a "fresh cross sectional sample". This consisted of a randomized sample from a USPS database that had a set of residential addresses from all 50 states and Washington DC. All of these voters had an equal chance of being selected. Then these chosen voters were randomly assigned to a type of survey (web-only, mixed web, mixed video). With this double randomized sampling method it can be assumed that these samples are sufficiently independent and independently distributed hence satisfying the I.I.D. assumption.
+
+The second assumption states that the data must be measured on a metric scale. In our case, we measured whether a voter had difficulty with a simple binary variable (1 if yes, 0 if no). Hence, the binary variable satisfies the metric scale assumption.
+
+The third assumption states that the data must satisfy the Central Limit Theorem. In our case, the sample size is sufficiently large (\~5800 observations) to assume that it will eventually converge to a normal distribution as per the Central Limit Theorem.
+
+# Results
+
+```{r t-test, echo=TRUE}
+test_frame <- anes %>% 
+  filter(party %in% c('D', 'R'))%>%
+  filter(had_difficulty_numeric == 1 | had_difficulty_numeric == 0)
+
+test <- anes %>% 
+  filter(party %in% c('D', 'R'))%>%
+  filter(had_difficulty_numeric == 1 | had_difficulty_numeric ==0) %$% 
+  t.test(had_difficulty_numeric == 1 ~ party)
+```
+
+Based on the results of our t-test, we fail to reject the null hypothesis that we stated earlier in this report (t=`r round(test$statistic, 2)`, p=`r round(test$p.value, 2)`). Essentially, based on the data we had and the statistical test we performed, we cannot conclude that there is any significant difference between the probability that a democrat experiences difficulty voting vs. the probability that a Republican experiences difficulty voting.
+
+It should be noted, that this test is not comprehensive and there are multiple limitations to keep in mind. Compared to the entire US voting population, the number of observations we looked at is quite small so the results cannot be claimed to be representative of the US voting population. Furthermore, voting difficulty is not a numeric or definitive concept and the survey had to provide certain options to voters during a survey so we cannot claim that we fully represent what voting difficulty means. Also the types of difficulty that were asked about were not considered in this test and simply stripped down to a binary Yes/No output variable. Hence, some information and nuance may have been lost in that process.
+
+# Discussion
+
+Based on the results of this statistical test, we cannot conclude that there is any significant difference in voting difficulty between Democrats and republicans. Practically, this result aligns with the "eye test" of the raw data. With a sample of almost 6000 voters, there was only a few percentage difference between Democrats who reported difficulty in voting and Republicans. Statistically, this small difference came out to be not enough to reject our null hypothesis.
+
+These results may be interesting to both political parties. As mentioned in the opening section of this report, Democrats and Republicans clearly have a large difference in perception of how difficult it is to vote with 60% Democrats reporting they expected difficulty voting while only 35% of Republicans reported the same. Yet after the election actually took place, there doesn't seem to be a practical difference in voting difficulty between parties. Democrats may want to focus on this messaging to ensure their voter base can be better prepared for the different methods of voting. It may also be worth digging into the different types of difficulty that voters faced. This study focused on the overall difficulties voters faced but specific items such as vote-by-mail or polling lines may show different results. Broadly, this study is an initial step to understand how the different parties go about voting and there is much more specific work that can still be done to garner more insights.
+
+
+
+```{r registration difficulty explore, include = FALSE}
+anes_reg_explore <- anes %>% 
+  group_by(party) %>% 
+  summarize(
+    party_count = sum(count_rows),
+    voted_count = sum(voted),
+    party_difficulty = sum(had_difficulty_numeric),
+    pct_difficulty = round((party_difficulty / party_count) * 100, digits=2),
+    had_difficulty_and_voted_count = sum(had_difficulty_and_voted),
+    reg_difficulty = sum(difficulty_registering)
+  )
+```
+
+```{r party identification explore, include = FALSE}
+anes_party_explore <- anes %>% 
+  group_by(party, party_lean) %>% 
+  summarize(
+    party_count = sum(count_rows),
+    voted_count = sum(voted),
+    party_difficulty = sum(had_difficulty_numeric),
+    pct_difficulty = round((party_difficulty / party_count) * 100, digits=2),
+    had_difficulty_and_voted_count = sum(had_difficulty_and_voted),
+    reg_difficulty = sum(difficulty_registering),
+    .groups = "keep"
+  ) %>% as.data.frame()
+```
+
+```{r voting explore, include = FALSE}
+anes_voting_explore <- anes %>% 
+  group_by(party, vote_status) %>% 
+  summarize(
+    party_count = sum(count_rows),
+    voted_count = sum(voted),
+    party_difficulty = sum(had_difficulty_numeric),
+    pct_difficulty = round((party_difficulty / party_count) * 100, digits=2),
+    had_difficulty_and_voted_count = sum(had_difficulty_and_voted),
+    reg_difficulty = sum(difficulty_registering),
+    no_vote_bc_difficulty = sum(did_not_vote_due_to_difficulty),
+    .groups = "keep"
+  ) %>% as.data.frame()
+```
